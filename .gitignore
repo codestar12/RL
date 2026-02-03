@@ -52,3 +52,4 @@ team/.env
 team/mira/cache/
 team/mira/data/
 team/theo/evalplus_env/
+.venv-claude/

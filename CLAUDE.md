@@ -69,6 +69,30 @@ docker buildx build -t nemo-rl:latest -f Dockerfile .
 docker run -it --gpus all -v /path/to/nemo-rl:/nemo-rl nemo-rl:latest
 ```
 
+## Docker vs Bare Metal
+
+**TL;DR: Use Docker for short-term GPU rentals or unfamiliar environments.**
+
+If you're renting GPUs for a few days or working on a new machine, use the pre-built NGC container:
+```bash
+docker pull nvcr.io/nvidia/nemo-rl:v0.5.0
+docker run -it --gpus all \
+  -v $PWD:/opt/nemo-rl \
+  -v $HOME/.cache/huggingface:/root/.cache/huggingface \
+  -e HF_HOME=/root/.cache/huggingface \
+  nvcr.io/nvidia/nemo-rl:v0.5.0
+```
+
+**Why Docker is better for quick starts:**
+- All dependencies pre-built (vLLM, Megatron, Transformer Engine)
+- No cuDNN headers or libibverbs-dev installation needed
+- Avoids spending hours debugging build issues on unfamiliar systems
+
+**When bare metal makes sense:**
+- Long-term dedicated development machines where you've already set up dependencies
+- When you need to frequently modify and rebuild core dependencies
+- CI/CD pipelines with pre-configured environments
+
 ## Architecture Overview
 
 ### Single-Controller Architecture
