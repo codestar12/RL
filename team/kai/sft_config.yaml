@@ -1,0 +1,223 @@
+# High-Performance FP8 SFT Config for Team Impossible
+# Target: Llama 8B on 8x H100 80GB (single node)
+# Usage: uv run python examples/run_sft.py --config team/kai/sft_config.yaml
+#
+# Key Performance Optimizations:
+# 1. FP8 training via Megatron (e4m3 blockwise)
+# 2. Sequence packing for high MFU
+# 3. RoPE fusion + bias activation fusion
+# 4. Distributed optimizer with grad/param overlap
+# 5. TP=1, PP=2 for optimal memory/compute balance
+
+defaults: ../../examples/configs/sft.yaml
+
+sft:
+  max_num_epochs: 1
+  max_num_steps: 50000  # Will be bounded by epoch size
+  val_period: 500
+  val_batches: 8
+  val_global_batch_size: 128
+  val_micro_batch_size: 2
+  val_at_start: true
+  seed: 42
+
+checkpointing:
+  enabled: true
+  # Note: Atlas is working on S3 checkpointing - use local for now
+  checkpoint_dir: results/team-impossible/sft-llama8b-fp8
+  metric_name: "val:val_loss"
+  higher_is_better: false
+  keep_top_k: 5
+  save_period: 1000
+  checkpoint_must_save_by: null
+
+policy:
+  # Source checkpoint in HF format
+  model_name: s3://datology-research/cody/torchtitan_ckpts/math_and_code/v2/8b/phase3_1T/hf/step-127120/
+
+  tokenizer:
+    # Use Llama 3.1 8B Instruct tokenizer for chat template
+    name: meta-llama/Llama-3.1-8B-Instruct
+    chat_template: default
+    chat_template_kwargs: null
+
+  # Batch configuration
+  # GBS=256, DP=4 (with PP=2), MBS=2 -> grad_accum=32
+  train_global_batch_size: 256
+  train_micro_batch_size: 2
+
+  # Sequence length
+  max_total_sequence_length: 4096
+
+  # Precision - BF16 base with FP8 compute via Megatron
+  precision: "bfloat16"
+
+  offload_optimizer_for_logprob: false
+
+  # Disable DTensor - using Megatron for FP8
+  dtensor_cfg:
+    enabled: false
+
+  # Megatron backend with FP8
+  megatron_cfg:
+    enabled: true
+
+    # Environment variables for FP8
+    env_vars:
+      NVTE_FP8_BLOCK_SCALING_FP32_SCALES: "1"
+      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+
+    # Memory management
+    empty_unused_memory_level: 0  # Fast mode, FP8 saves memory
+
+    # Model type for HF->Megatron conversion
+    converter_type: "LlamaForCausalLM"
+
+    # Parallelism: TP=1, PP=2 -> DP=4 on 8 GPUs
+    # PP=2 allows larger batch sizes with FP8
+    tensor_model_parallel_size: 1
+    pipeline_model_parallel_size: 2
+    context_parallel_size: 1
+    expert_tensor_parallel_size: 1
+    expert_model_parallel_size: 1
+
+    # Pipeline configuration
+    pipeline_dtype: ${policy.precision}
+    num_layers_in_first_pipeline_stage: null
+    num_layers_in_last_pipeline_stage: null
+
+    # No activation checkpointing - FP8 saves enough memory
+    activation_checkpointing: false
+
+    # Sequence parallel off (TP=1)
+    sequence_parallel: false
+
+    # FP8 Configuration - KEY FOR PERFORMANCE
+    fp8_cfg:
+      enabled: true
+      fp8: "e4m3"  # E4M3 format for training
+      fp8_recipe: "blockwise"  # Blockwise scaling for H100
+      fp8_param: false  # Keep params in higher precision for stability
+
+    # Performance optimizations
+    apply_rope_fusion: true  # ~20% speedup
+    bias_activation_fusion: true  # ~25% speedup with RoPE fusion
+    defer_fp32_logits: true  # Save memory on logits
+
+    # MoE settings (not used for Llama 8B but need to be set)
+    freeze_moe_router: false
+    moe_router_dtype: null
+    moe_router_load_balancing_type: "aux_loss"
+    moe_router_bias_update_rate: 0.0
+    moe_permute_fusion: false
+    moe_per_layer_logging: false
+    moe_enable_deepep: false
+    moe_token_dispatcher_type: "allgather"
+    moe_shared_expert_overlap: false
+
+    # Optimizer - AdamW with distributed optimizer
+    optimizer:
+      optimizer: "adam"
+      lr: 2.0e-5  # Standard SFT learning rate
+      min_lr: 2.0e-6  # Minimum LR for decay
+      weight_decay: 0.01
+      bf16: true
+      fp16: false
+      params_dtype: "bfloat16"
+
+      adam_beta1: 0.9
+      adam_beta2: 0.95  # Slightly lower for stability
+      adam_eps: 1.0e-8
+
+      sgd_momentum: 0.9  # Unused but required
+
+      use_distributed_optimizer: true  # Shard optimizer states
+      use_precision_aware_optimizer: false  # Disabled with FP8
+
+      clip_grad: 1.0  # Gradient clipping
+
+      optimizer_cpu_offload: false
+      optimizer_offload_fraction: 0.0
+
+    # Learning rate scheduler
+    scheduler:
+      start_weight_decay: 0.01
+      end_weight_decay: 0.01
+      weight_decay_incr_style: "constant"
+      lr_decay_style: "cosine"  # Cosine decay
+      lr_decay_iters: 50000  # Match max_num_steps
+      lr_warmup_iters: 100  # Quick warmup
+      lr_warmup_init: 1.0e-7  # Start very small
+
+    # Distributed data parallel config
+    distributed_data_parallel_config:
+      grad_reduce_in_fp32: false  # Keep grads in BF16 for speed
+      overlap_grad_reduce: true  # Overlap communication
+      overlap_param_gather: true  # Overlap param gather
+      data_parallel_sharding_strategy: "optim_grads_params"  # Full sharding
+      use_custom_fsdp: false
+
+  # Sequence packing - CRITICAL FOR MFU
+  sequence_packing:
+    enabled: true
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    algorithm: "modified_first_fit_decreasing"
+    sequence_length_round: 64  # Round to 64 for efficiency
+
+  dynamic_batching:
+    enabled: false
+
+  # Sequence length divisibility
+  make_sequence_length_divisible_by: 1
+
+  max_grad_norm: 1.0
+
+  # Disable FSDP optimizer (using Megatron optimizer)
+  optimizer: null
+
+data:
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  add_bos: true
+  add_eos: true
+  add_generation_prompt: false  # For SFT, we include response
+  shuffle: true
+  num_workers: 4  # More workers for data loading
+
+  # Training dataset - will be configured by Mira
+  # Using OpenMathInstruct-2 as default (well-tested)
+  train:
+    dataset_name: OpenMathInstruct-2
+    output_key: generated_solution
+    split: train_1M
+    split_validation_size: 0.02  # Small validation split
+    seed: ${sft.seed}
+
+  validation: null  # Use split from train
+
+  default:
+    prompt_file: examples/prompts/math.txt
+    system_prompt_file: null
+    processor: "sft_processor"
+
+logger:
+  log_dir: logs/team-impossible/sft-llama8b-fp8
+  wandb_enabled: true
+  tensorboard_enabled: true
+  mlflow_enabled: false
+  swanlab_enabled: false
+  monitor_gpus: true
+
+  wandb:
+    project: team-impossible
+    name: sft-llama8b-fp8-yolo
+
+  tensorboard:
+    log_dir: tb_logs-team-impossible-sft
+
+  gpu_monitoring:
+    collection_interval: 30
+    flush_interval: 60
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 1

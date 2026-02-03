@@ -1,0 +1,179 @@
+# GRPO Code RL Configuration - 2 GPU Test Setup
+# Team Impossible - Zara (RL Researcher)
+#
+# This config is for initial testing of code-focused GRPO training
+# on 2 GPUs before scaling to the full 8-GPU production setup.
+
+defaults: "../../examples/configs/grpo_math_1B.yaml"
+
+# GRPO Algorithm Configuration
+grpo:
+  num_prompts_per_step: 16  # Reduced for 2 GPU
+  num_generations_per_prompt: 8  # Reduced for faster iteration
+  max_rollout_turns: 1  # Single-turn code completion
+  max_num_epochs: 1
+  max_num_steps: 100  # Short test run
+  normalize_rewards: true
+  use_leave_one_out_baseline: true
+  val_period: 20
+  val_at_start: false
+  max_val_samples: 64
+  val_batch_size: 64
+  seed: 42
+  use_dynamic_sampling: false
+  reward_shaping:
+    enabled: false
+  reward_scaling:
+    enabled: true
+    source_min: 0.0
+    source_max: 1.0
+    target_min: 0.0
+    target_max: 1.0
+
+loss_fn:
+  reference_policy_kl_penalty: 0.01
+  reference_policy_kl_type: "k3"
+  kl_input_clamp_value: 20.0
+  kl_output_clamp_value: 10.0
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.2
+  token_level_loss: true
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: "results/grpo-code-2gpu-test"
+  metric_name: "val:accuracy"
+  higher_is_better: true
+  keep_top_k: 3
+  save_period: 25
+
+policy:
+  model_name: "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+  tokenizer:
+    name: ${policy.model_name}
+    chat_template_kwargs: null
+  hf_config_overrides: {}
+  train_global_batch_size: 128  # 16 prompts * 8 generations
+  train_micro_batch_size: 2
+  generation_batch_size: 16
+  logprob_batch_size: 2
+  max_total_sequence_length: 2048
+  precision: "bfloat16"
+  logprob_chunk_size: null
+  offload_optimizer_for_logprob: false
+
+  dtensor_cfg:
+    _v2: true
+    enabled: true
+    cpu_offload: False
+    sequence_parallel: false
+    activation_checkpointing: false
+    tensor_parallel_size: 1
+    context_parallel_size: 1
+    custom_parallel_plan: null
+    lora_cfg:
+      enabled: False
+
+  megatron_cfg:
+    enabled: false
+
+  dynamic_batching:
+    enabled: False
+
+  sequence_packing:
+    enabled: True
+    train_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.train_micro_batch_size}}
+    logprob_mb_tokens: ${mul:${policy.max_total_sequence_length}, ${policy.logprob_batch_size}}
+    algorithm: "modified_first_fit_decreasing"
+    sequence_length_round: 64
+
+  max_grad_norm: 1.0
+
+  optimizer:
+    name: "torch.optim.AdamW"
+    kwargs:
+      lr: 5.0e-6
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+      eps: 1e-8
+      foreach: False
+      fused: False
+
+  scheduler:
+    - name: "torch.optim.lr_scheduler.LinearLR"
+      kwargs:
+        start_factor: 0.1
+        end_factor: 1.0
+        total_iters: 20
+    - name: "torch.optim.lr_scheduler.ConstantLR"
+      kwargs:
+        factor: 1.0
+        total_iters: 10000000000
+    - milestones: [20]
+
+  generation:
+    backend: "vllm"
+    max_new_tokens: 1024  # Code can be shorter than math reasoning
+    temperature: 0.8  # Slightly less random for code
+    top_p: 0.95
+    top_k: null
+    stop_token_ids: null
+    stop_strings: ["```"]  # Stop at code block end
+    vllm_cfg:
+      async_engine: false
+      precision: ${policy.precision}
+      kv_cache_dtype: "auto"
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      gpu_memory_utilization: 0.7
+      max_model_len: ${policy.max_total_sequence_length}
+      enforce_eager: False
+      enable_vllm_metrics_logger: true
+      vllm_metrics_logger_interval: 1.0
+    colocated:
+      enabled: true
+      resources:
+        gpus_per_node: null
+        num_nodes: null
+
+# Data Configuration
+# Note: This will need a custom dataset loader for Nemotron-RL-coding
+# For initial testing, we use the math dataset to verify the setup works
+data:
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  shuffle: true
+  num_workers: 1
+  train:
+    dataset_name: OpenMathInstruct-2  # Start with math to verify setup
+    split_validation_size: 0.05
+    seed: ${grpo.seed}
+  validation: null
+  default:
+    prompt_file: "examples/prompts/cot.txt"
+    system_prompt_file: null
+    processor: "math_hf_data_processor"
+    env_name: "math"
+
+# Environment Configuration
+# For code RL, we'll switch to "code" env_name with CodeEnvironment
+env:
+  math:
+    num_workers: 4
+    math_verify_impl: "hf_math_verify"
+
+logger:
+  log_dir: "logs/grpo-code-2gpu-test"
+  num_val_samples_to_print: 5
+  wandb_enabled: false
+  tensorboard_enabled: true
+  mlflow_enabled: false
+  swanlab_enabled: false
+  monitor_gpus: true
+  tensorboard: {}
+  gpu_monitoring:
+    collection_interval: 10
+    flush_interval: 10
+
+cluster:
+  gpus_per_node: 2
+  num_nodes: 1

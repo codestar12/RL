@@ -1,0 +1,20 @@
+# Quick Test Config - 10 steps validation
+# Usage: uv run python examples/run_sft.py --config team/kai/sft_config_quicktest.yaml
+#
+# Purpose: Validate FP8 config before full YOLO run
+
+defaults: ./sft_config.yaml
+
+sft:
+  max_num_steps: 10
+  val_period: 5
+  val_batches: 2
+  val_at_start: true
+
+checkpointing:
+  enabled: false  # No checkpointing for quick test
+
+logger:
+  monitor_gpus: true
+  wandb:
+    name: sft-llama8b-fp8-quicktest
