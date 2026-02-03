@@ -1,0 +1,66 @@
+# SFT config for custom Llama 3 8B (4K context, no RoPE scaling)
+# Usage: uv run python examples/run_sft.py --config examples/configs/recipes/cody/sft-llama3-8b-1n8g.yaml
+
+defaults: ../../sft.yaml
+
+sft:
+  max_num_epochs: 1
+  max_num_steps: 1000
+  val_period: 100
+  val_batches: 4
+  val_global_batch_size: 64
+  val_micro_batch_size: 2
+  val_at_start: true
+  seed: 42
+
+checkpointing:
+  checkpoint_dir: results/cody/sft-llama3-8b
+  save_period: 200
+
+policy:
+  # TODO: Update this path to your model checkpoint (with instruct tokenizer files copied in)
+  model_name: /path/to/your/llama3-8b-hf
+  tokenizer:
+    name: ${policy.model_name}
+    chat_template: default  # Uses instruct chat template from tokenizer_config.json
+
+  train_global_batch_size: 128
+  train_micro_batch_size: 2
+  max_total_sequence_length: 4096  # Your model's limit (no RoPE scaling)
+  precision: bfloat16
+
+  dtensor_cfg:
+    enabled: true
+    tensor_parallel_size: 1
+    activation_checkpointing: false  # Enable if OOM
+    cpu_offload: false
+
+  optimizer:
+    kwargs:
+      lr: 2.0e-5
+      weight_decay: 0.01
+      eps: 1.0e-8
+
+data:
+  max_input_seq_length: ${policy.max_total_sequence_length}
+  add_bos: true
+  add_eos: true
+  add_generation_prompt: false
+  train:
+    dataset_name: squad  # Built-in dataset for initial testing
+    split: train
+  validation:
+    dataset_name: squad
+    split: validation
+
+logger:
+  log_dir: logs/cody/sft-llama3-8b
+  wandb_enabled: true
+  tensorboard_enabled: true
+  wandb:
+    project: llama3-8b-posttraining
+    name: sft-llama3-8b-test
+
+cluster:
+  gpus_per_node: 8
+  num_nodes: 1
