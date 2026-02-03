@@ -47,3 +47,8 @@ code_snapshots*/
 *runtime_env.yaml
 !default_runtime_env.yaml
 team/.env
+
+# Team Impossible data (large files)
+team/mira/cache/
+team/mira/data/
+team/theo/evalplus_env/
